@@ -48,15 +48,15 @@
       </button>
     </div>
 
-    <!-- 操作按钮 -->
-    <div v-if="imageDataUrl && !result" class="action-bar">
+    <!-- 操作按钮：第一步 OCR -->
+    <div v-if="imageDataUrl && !result && !ocrText" class="action-bar">
       <button
         class="btn btn-primary btn-block"
         :disabled="loading || !hasApiKey()"
-        @click="startAnalysis"
+        @click="startOcr"
       >
         <span v-if="loading" class="spinner" style="width:18px;height:18px;border-width:2px"></span>
-        <span v-else>🤖 开始识别</span>
+        <span v-else>📷 扫描文字</span>
       </button>
     </div>
 
@@ -64,6 +64,30 @@
     <div v-if="loading && progressText" class="progress-hint card-glass">
       <span class="spinner spinner-lg" style="margin:0 auto 12px"></span>
       <p class="text-center">{{ progressText }}</p>
+    </div>
+
+    <!-- OCR 结果编辑 -->
+    <div v-if="ocrText && !result && !loading" class="ocr-edit-section">
+      <div class="card-glass">
+        <div class="label-tag">✏️ OCR 识别结果（可修改）</div>
+        <textarea
+          v-model="editableOcrText"
+          class="input ocr-textarea"
+          rows="6"
+          placeholder="识别出的题目文字..."
+        ></textarea>
+        <p class="text-xs text-muted mt-2">如果识别不准确，请手动修正后再提交 AI 分析</p>
+      </div>
+      <button
+        class="btn btn-primary btn-block mt-2"
+        :disabled="!editableOcrText.trim()"
+        @click="sendToAi"
+      >
+        🤖 AI 分析
+      </button>
+      <button class="btn btn-outline btn-block mt-2" @click="reset">
+        🔄 重新拍照
+      </button>
     </div>
 
     <!-- 错误提示 -->
@@ -156,8 +180,9 @@ const imageDataUrl = ref(null)
 const imageFile = ref(null)
 const progressText = ref('')
 const showEditor = ref(false)
+const editableOcrText = ref('')
 
-const { loading, error, result, analyzeImage } = useApi()
+const { loading, error, result, ocrText, analyzeImage } = useApi()
 const { compress } = useImage()
 const { addQuestion } = useDb()
 const { hasApiKey, settings } = useSettings()
@@ -187,21 +212,116 @@ function onEditorConfirm(dataUrl) {
   showToast('图片已编辑')
 }
 
-async function startAnalysis() {
+async function startOcr() {
   if (!imageDataUrl.value || !hasApiKey()) return
 
-  progressText.value = '正在压缩图片...'
-  await new Promise(r => setTimeout(r, 100))
+  editableOcrText.value = ''
+  result.value = null
 
   try {
-    await analyzeImage(imageDataUrl.value, settings.value, (msg) => {
-      progressText.value = msg
+    // 调用 analyzeImage 但只做 OCR 步骤
+    loading.value = true
+    error.value = null
+    progressText.value = '正在识别图片中的文字...'
+
+    // 使用 Tesseract.js 进行 OCR
+    const Tesseract = (await import('tesseract.js')).default
+    const ocrResult = await Tesseract.recognize(
+      imageDataUrl.value,
+      'chi_sim+eng',
+      {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            const pct = Math.round(m.progress * 100)
+            progressText.value = `OCR 识别中... ${pct}%`
+          }
+        }
+      }
+    )
+
+    const text = ocrResult.data.text.trim()
+    ocrText.value = text
+    editableOcrText.value = text || '(未识别出文字，请手动输入题目)'
+    progressText.value = ''
+    showToast('文字扫描完成，请确认后提交 AI 分析')
+  } catch (err) {
+    showToast('OCR 识别失败: ' + err.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function sendToAi() {
+  if (!editableOcrText.value.trim() || !hasApiKey()) return
+
+  try {
+    loading.value = true
+    error.value = null
+    progressText.value = '正在分析题目...'
+
+    // 直接调用 DeepSeek API 分析文本
+    const baseUrl = settings.value.apiBase || 'https://api.deepseek.com'
+    const model = settings.value.model || 'deepseek-v4-flash'
+    const prompt = (await import('@/config/prompts.js')).getPrompt()
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${settings.value.apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: `以下是从图片中识别出的题目文字，请分析并按要求返回 JSON 格式的结果：\n\n${editableOcrText.value}` }
+        ],
+        temperature: 0.1,
+        max_tokens: 4096
+      })
     })
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '未知错误')
+      throw new Error(`API 请求失败 (${response.status}): ${errText}`)
+    }
+
+    progressText.value = '正在解析返回结果...'
+
+    const data = await response.json()
+    const content = data.choices?.[0]?.message?.content
+    if (!content) throw new Error('API 返回内容为空')
+
+    const { parseResponse, validateResult } = await import('@/config/prompts.js')
+    let parsed
+    try {
+      parsed = parseResponse(content)
+    } catch (e) {
+      parsed = {
+        originalText: editableOcrText.value,
+        subject: '其他', subSubject: '', questionType: '其他',
+        solution: { thinking: '解析返回格式失败', steps: [], answer: content }
+      }
+    }
+
+    if (!parsed.originalText || parsed.originalText.length < 3) {
+      parsed.originalText = editableOcrText.value
+    }
+    if (!parsed.subject) parsed.subject = '其他'
+    if (!parsed.questionType) parsed.questionType = '其他'
+    if (!parsed.solution) parsed.solution = { thinking: '', steps: [], answer: '' }
+    if (!parsed.solution.thinking) parsed.solution.thinking = ''
+    if (!parsed.solution.steps || !Array.isArray(parsed.solution.steps)) parsed.solution.steps = []
+    if (!parsed.solution.answer) parsed.solution.answer = ''
+
+    result.value = parsed
     progressText.value = ''
     showToast('分析完成！')
   } catch (err) {
     progressText.value = ''
     showToast(err.message || '分析失败')
+  } finally {
+    loading.value = false
   }
 }
 
@@ -230,6 +350,8 @@ function reset() {
   result.value = null
   error.value = null
   progressText.value = ''
+  ocrText.value = ''
+  editableOcrText.value = ''
   // 清空文件输入
   if (fileInput.value) {
     fileInput.value.value = ''
@@ -339,6 +461,15 @@ function reset() {
   font-size: 13px;
   color: #fff;
   font-weight: 500;
+}
+
+/* OCR 编辑区 */
+.ocr-textarea {
+  min-height: 120px;
+  resize: vertical;
+  font-size: 15px;
+  line-height: 1.7;
+  font-family: inherit;
 }
 
 /* 编辑按钮 */
