@@ -49,10 +49,10 @@
         <div class="setting-label">
           <span class="label-text">当前模型</span>
         </div>
-        <span class="tag tag-primary">DeepSeek Flash (deepseek-chat)</span>
+        <span class="tag tag-primary">DeepSeek V4 Flash (deepseek-v4-flash)</span>
       </div>
       <div class="text-sm text-muted mt-2">
-        DeepSeek Flash 支持图片识别和分析，价格约 ¥0.5/百万 token
+        DeepSeek V4 Flash 纯文本模型，价格约 ¥0.5/百万 token。前端使用 Tesseract.js 进行图片 OCR 识别后，再发送文字给 AI 分析。
       </div>
     </div>
 

@@ -4,7 +4,7 @@ const STORAGE_KEY = 'fixmate_settings'
 
 const defaults = {
   apiKey: '',
-  model: 'deepseek-chat',  // DeepSeek Flash 模型名
+  model: 'deepseek-v4-flash',
   apiBase: 'https://api.deepseek.com'
 }
 

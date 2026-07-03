@@ -1,34 +1,23 @@
 import { ref } from 'vue'
+import Tesseract from 'tesseract.js'
 import { getPrompt, parseResponse, validateResult } from '@/config/prompts.js'
 
 export function useApi() {
   const loading = ref(false)
   const error = ref(null)
   const result = ref(null)
+  const ocrText = ref('')  // OCR 识别出的文字
 
   /**
-   * base64 转 Blob
+   * 两步流程：
+   * 1) Tesseract.js 浏览器 OCR 识别图片文字
+   * 2) 将识别出的文字发给 DeepSeek V4 Flash 分析
    */
-  function base64ToBlob(dataUrl) {
-    const parts = dataUrl.split(',')
-    const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/jpeg'
-    const bytes = atob(parts[1])
-    const ab = new ArrayBuffer(bytes.length)
-    const ia = new Uint8Array(ab)
-    for (let i = 0; i < bytes.length; i++) {
-      ia[i] = bytes.charCodeAt(i)
-    }
-    return new Blob([ab], { type: mime })
-  }
-
-  /**
-   * 1) 上传图片到 DeepSeek Files API
-   * 2) 用返回的 file_id 调用 chat API 进行分析
-   */
-  async function analyzeImage(imageBase64, settings, onProgress) {
+  async function analyzeImage(imageDataUrl, settings, onProgress) {
     loading.value = true
     error.value = null
     result.value = null
+    ocrText.value = ''
 
     try {
       if (!settings.apiKey) {
@@ -36,36 +25,32 @@ export function useApi() {
       }
 
       const baseUrl = settings.apiBase || 'https://api.deepseek.com'
-      const model = settings.model || 'deepseek-chat'
+      const model = settings.model || 'deepseek-v4-flash'
 
-      // ----- 第一步：上传图片 -----
-      onProgress?.('正在上传图片...')
+      // ----- 第一步：OCR 识别图片文字 -----
+      onProgress?.('正在识别图片中的文字...')
 
-      const blob = base64ToBlob(imageBase64)
-      const formData = new FormData()
-      formData.append('file', blob, 'question.jpg')
-      formData.append('purpose', 'vision')
+      const ocrResult = await Tesseract.recognize(
+        imageDataUrl,
+        'chi_sim+eng',
+        {
+          logger: (m) => {
+            if (m.status === 'recognizing text') {
+              const pct = Math.round(m.progress * 100)
+              onProgress?.(`OCR 识别中... ${pct}%`)
+            }
+          }
+        }
+      )
 
-      const uploadRes = await fetch(`${baseUrl}/v1/files`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${settings.apiKey}`
-        },
-        body: formData
-      })
+      const recognizedText = ocrResult.data.text.trim()
+      ocrText.value = recognizedText
 
-      if (!uploadRes.ok) {
-        const errText = await uploadRes.text().catch(() => '未知错误')
-        throw new Error(`图片上传失败 (${uploadRes.status}): ${errText}`)
+      if (!recognizedText || recognizedText.length < 3) {
+        throw new Error('OCR 未能识别出有效文字，请确保图片清晰')
       }
 
-      const uploadData = await uploadRes.json()
-      const fileId = uploadData.id
-      if (!fileId) {
-        throw new Error('上传成功但未获取到 file_id')
-      }
-
-      // ----- 第二步：调用 Chat API 分析 -----
+      // ----- 第二步：调用 DeepSeek API 分析题目 -----
       onProgress?.('正在分析题目...')
 
       const prompt = getPrompt()
@@ -79,7 +64,7 @@ export function useApi() {
           },
           {
             role: 'user',
-            content: `请分析这张题目图片，按要求的 JSON 格式返回结果。\n![image](file://${fileId})`
+            content: `以下是从图片中识别出的题目文字，请分析并按要求返回 JSON 格式的结果：\n\n${recognizedText}`
           }
         ],
         temperature: 0.1,
@@ -109,14 +94,14 @@ export function useApi() {
         throw new Error('API 返回内容为空')
       }
 
-      // ----- 第三步：解析 JSON -----
+      // 解析 JSON
       let parsed
       try {
         parsed = parseResponse(content)
       } catch (e) {
         console.warn('JSON 解析失败，尝试修复...', e)
         parsed = {
-          originalText: content,
+          originalText: recognizedText,
           subject: '其他',
           subSubject: '',
           questionType: '其他',
@@ -128,13 +113,17 @@ export function useApi() {
         }
       }
 
+      // 如果 AI 没有返回正确的原文，用 OCR 结果作为原文
+      if (!parsed.originalText || parsed.originalText.length < 3) {
+        parsed.originalText = recognizedText
+      }
+
       // 校验必要字段
       const validation = validateResult(parsed)
       if (!validation.valid) {
         console.warn('格式校验警告:', validation.errors.join(', '))
       }
 
-      if (!parsed.originalText) parsed.originalText = '(未能识别出题目文字)'
       if (!parsed.subject) parsed.subject = '其他'
       if (!parsed.questionType) parsed.questionType = '其他'
       if (!parsed.solution) {
@@ -157,5 +146,5 @@ export function useApi() {
     }
   }
 
-  return { loading, error, result, analyzeImage }
+  return { loading, error, result, ocrText, analyzeImage }
 }
