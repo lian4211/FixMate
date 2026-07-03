@@ -56,7 +56,7 @@
         @click="startOcr"
       >
         <span v-if="loading" class="spinner" style="width:18px;height:18px;border-width:2px"></span>
-        <span v-else>📷 扫描文字</span>
+        <span v-else>{{ isVisionModel ? '🖼️ 开始识别' : '📷 扫描文字' }}</span>
       </button>
     </div>
 
@@ -167,7 +167,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useApi } from '@/composables/useApi.js'
 import { useImage } from '@/composables/useImage.js'
 import { useDb } from '@/composables/useDb.js'
@@ -181,6 +181,10 @@ const imageFile = ref(null)
 const progressText = ref('')
 const showEditor = ref(false)
 const editableOcrText = ref('')
+
+const isVisionModel = computed(() => {
+  return settings.value.model && !settings.value.model?.includes('deepseek')
+})
 
 const { loading, error, result, ocrText, analyzeImage } = useApi()
 const { compress } = useImage()
@@ -218,6 +222,85 @@ async function startOcr() {
   editableOcrText.value = ''
   result.value = null
 
+  // 判断模型是否支持视觉
+  const isVision = !settings.value.model?.includes('deepseek')
+
+  if (isVision) {
+    // === 视觉模式：直接发图片给 AI ===
+    try {
+      loading.value = true
+      error.value = null
+      progressText.value = '正在分析图片...'
+
+      const baseUrl = settings.value.apiBase || 'https://api.deepseek.com'
+      const model = settings.value.model || 'gpt-4o'
+      const prompt = (await import('@/config/prompts.js')).getPrompt()
+
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${settings.value.apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: prompt },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '请分析这张题目图片，按要求的 JSON 格式返回结果。' },
+                { type: 'image_url', image_url: { url: imageDataUrl.value } }
+              ]
+            }
+          ],
+          temperature: 0.1,
+          max_tokens: 4096
+        })
+      })
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '未知错误')
+        throw new Error(`API 请求失败 (${response.status}): ${errText}`)
+      }
+
+      progressText.value = '正在解析结果...'
+      const data = await response.json()
+      const content = data.choices?.[0]?.message?.content
+      if (!content) throw new Error('API 返回内容为空')
+
+      const { parseResponse, validateResult } = await import('@/config/prompts.js')
+      let parsed
+      try {
+        parsed = parseResponse(content)
+      } catch (e) {
+        parsed = {
+          originalText: content,
+          subject: '其他', subSubject: '', questionType: '其他',
+          solution: { thinking: '解析返回格式失败', steps: [], answer: content }
+        }
+      }
+      if (!parsed.originalText || parsed.originalText.length < 3) parsed.originalText = '(未能识别)'
+      if (!parsed.subject) parsed.subject = '其他'
+      if (!parsed.questionType) parsed.questionType = '其他'
+      if (!parsed.solution) parsed.solution = { thinking: '', steps: [], answer: '' }
+      if (!parsed.solution.thinking) parsed.solution.thinking = ''
+      if (!parsed.solution.steps || !Array.isArray(parsed.solution.steps)) parsed.solution.steps = []
+      if (!parsed.solution.answer) parsed.solution.answer = ''
+
+      result.value = parsed
+      progressText.value = ''
+      showToast('分析完成！')
+    } catch (err) {
+      progressText.value = ''
+      showToast(err.message || '分析失败')
+    } finally {
+      loading.value = false
+    }
+    return
+  }
+
+  // === OCR 模式（DeepSeek 纯文本模型） ===
   try {
     // 调用 analyzeImage 但只做 OCR 步骤
     loading.value = true

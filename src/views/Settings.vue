@@ -8,7 +8,7 @@
       <div class="setting-item">
         <div class="setting-label">
           <span class="label-text">DeepSeek API Key</span>
-          <span class="label-desc">手动填写，仅存在本地浏览器</span>
+          <span class="label-desc">视觉模型也填这里，或换成其他 API Key</span>
         </div>
         <div class="setting-input">
           <input
@@ -24,10 +24,24 @@
         </div>
       </div>
 
+      <div class="divider"></div>
+
+      <!-- 模型预设选择 -->
+      <div class="setting-item">
+        <div class="setting-label">
+          <span class="label-text">模型提供商</span>
+          <span class="label-desc">选择支持图片识别的模型</span>
+        </div>
+        <select v-model="selectedPreset" class="input" @change="onPresetChange">
+          <option v-for="p in presets" :key="p.key" :value="p.key">
+            {{ p.label }}
+          </option>
+        </select>
+      </div>
+
       <div class="setting-item">
         <div class="setting-label">
           <span class="label-text">API 地址</span>
-          <span class="label-desc">默认 https://api.deepseek.com</span>
         </div>
         <input
           v-model="localApiBase"
@@ -37,22 +51,34 @@
         />
       </div>
 
+      <div class="setting-item">
+        <div class="setting-label">
+          <span class="label-text">模型名称</span>
+        </div>
+        <input
+          v-model="localModel"
+          class="input"
+          placeholder="deepseek-v4-flash"
+          @input="onModelChange"
+        />
+      </div>
+
       <button v-if="localApiKey" class="btn btn-sm btn-outline mt-2" @click="clearKey">
         清除 API Key
       </button>
     </div>
 
     <!-- 模型信息 -->
-    <div class="section-title mt-3">模型信息</div>
+    <div class="section-title mt-3">当前模式</div>
     <div class="card-glass">
       <div class="setting-item">
         <div class="setting-label">
-          <span class="label-text">当前模型</span>
+          <span class="label-text">{{ isVision ? '🖼️ 视觉模式（推荐）' : '📝 OCR+文本模式' }}</span>
+          <span class="label-desc">{{ isVision ? '图片直接发给 AI 识别+分析，一步到位' : '先用 OCR 提取文字，再发给 AI 分析' }}</span>
         </div>
-        <span class="tag tag-primary">DeepSeek V4 Flash (deepseek-v4-flash)</span>
       </div>
-      <div class="text-sm text-muted mt-2">
-        DeepSeek V4 Flash 纯文本模型，价格约 ¥0.5/百万 token。前端使用 Tesseract.js 进行图片 OCR 识别后，再发送文字给 AI 分析。
+      <div v-if="!isVision" class="text-sm text-muted mt-2">
+        ⚠️ {{ selectedPresetLabel }} 不支持图片识别，将自动使用 OCR 提取文字后再分析
       </div>
     </div>
 
@@ -96,7 +122,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useSettings } from '@/composables/useSettings.js'
 import { useDb } from '@/composables/useDb.js'
 import { showToast } from '@/stores/appState.js'
@@ -106,13 +132,39 @@ const { exportAll, importAll, clearAll, getCount } = useDb()
 
 const localApiKey = ref('')
 const localApiBase = ref('')
+const localModel = ref('')
 const showKey = ref(false)
 const saved = ref(false)
 const count = ref(0)
+const selectedPreset = ref('deepseek-flash')
+
+// 模型预设
+const presets = [
+  { key: 'openai-gpt4o', label: 'OpenAI GPT-4o (推荐)', base: 'https://api.openai.com', model: 'gpt-4o', vision: true },
+  { key: 'openai-gpt4o-mini', label: 'OpenAI GPT-4o-mini (便宜)', base: 'https://api.openai.com', model: 'gpt-4o-mini', vision: true },
+  { key: 'deepseek-flash', label: 'DeepSeek V4 Flash (纯文本)', base: 'https://api.deepseek.com', model: 'deepseek-v4-flash', vision: false },
+  { key: 'deepseek-pro', label: 'DeepSeek V4 Pro', base: 'https://api.deepseek.com', model: 'deepseek-v4-pro', vision: false },
+  { key: 'custom', label: '自定义（手动填写）', base: '', model: '', vision: true }
+]
+
+const isVision = computed(() => {
+  const p = presets.find(p => p.key === selectedPreset.value)
+  return p ? p.vision : true
+})
+
+const selectedPresetLabel = computed(() => {
+  const p = presets.find(p => p.key === selectedPreset.value)
+  return p ? p.label : '当前模型'
+})
 
 onMounted(() => {
   localApiKey.value = settings.value.apiKey
   localApiBase.value = settings.value.apiBase
+  localModel.value = settings.value.model || 'deepseek-v4-flash'
+  // 自动匹配预设
+  const match = presets.find(p => p.base === settings.value.apiBase && p.model === settings.value.model)
+  if (match) selectedPreset.value = match.key
+  else if (settings.value.apiBase && settings.value.model) selectedPreset.value = 'custom'
   loadCount()
 })
 
@@ -129,6 +181,22 @@ function onBaseChange() {
 function clearKey() {
   localApiKey.value = ''
   clear()
+  showSaveTip()
+}
+
+function onPresetChange() {
+  const p = presets.find(p => p.key === selectedPreset.value)
+  if (p && p.key !== 'custom') {
+    localApiBase.value = p.base
+    localModel.value = p.model
+    update('apiBase', p.base)
+    update('model', p.model)
+    showSaveTip()
+  }
+}
+
+function onModelChange() {
+  update('model', localModel.value)
   showSaveTip()
 }
 
