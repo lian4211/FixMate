@@ -41,15 +41,22 @@
       </template>
     </div>
 
+    <!-- 编辑按钮（图片上传后显示） -->
+    <div v-if="imageDataUrl && !result" class="edit-bar">
+      <button class="btn btn-outline btn-block" @click="showEditor = true">
+        ✂️ 裁剪 / 旋转
+      </button>
+    </div>
+
     <!-- 操作按钮 -->
-    <div v-if="imageDataUrl" class="action-bar">
+    <div v-if="imageDataUrl && !result" class="action-bar">
       <button
         class="btn btn-primary btn-block"
         :disabled="loading || !hasApiKey()"
         @click="startAnalysis"
       >
         <span v-if="loading" class="spinner" style="width:18px;height:18px;border-width:2px"></span>
-        <span v-else>{{ loadingText }}</span>
+        <span v-else>🤖 开始识别</span>
       </button>
     </div>
 
@@ -124,6 +131,14 @@
         重新识别
       </button>
     </div>
+
+    <!-- 图片编辑器 -->
+    <ImageEditor
+      v-if="showEditor"
+      :image-src="imageDataUrl"
+      @confirm="onEditorConfirm"
+      @cancel="showEditor = false"
+    />
   </div>
 </template>
 
@@ -134,11 +149,13 @@ import { useImage } from '@/composables/useImage.js'
 import { useDb } from '@/composables/useDb.js'
 import { useSettings } from '@/composables/useSettings.js'
 import { showToast } from '@/stores/appState.js'
+import ImageEditor from '@/components/upload/ImageEditor.vue'
 
 const fileInput = ref(null)
 const imageDataUrl = ref(null)
 const imageFile = ref(null)
 const progressText = ref('')
+const showEditor = ref(false)
 
 const { loading, error, result, analyzeImage } = useApi()
 const { compress } = useImage()
@@ -158,9 +175,16 @@ async function onFileSelect(e) {
     imageFile.value = compressed.file
     error.value = null
     result.value = null
+    showEditor.value = false
   } catch (err) {
     showToast('图片处理失败: ' + err.message)
   }
+}
+
+function onEditorConfirm(dataUrl) {
+  imageDataUrl.value = dataUrl
+  showEditor.value = false
+  showToast('图片已编辑')
 }
 
 async function startAnalysis() {
@@ -317,9 +341,14 @@ function reset() {
   font-weight: 500;
 }
 
+/* 编辑按钮 */
+.edit-bar {
+  margin-top: 10px;
+}
+
 /* 操作按钮区 */
 .action-bar {
-  margin-top: 12px;
+  margin-top: 10px;
 }
 
 /* 进度提示 */
