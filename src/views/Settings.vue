@@ -5,10 +5,12 @@
     <!-- API 设置 -->
     <div class="section-title mt-3">API 配置</div>
     <div class="card-glass">
+
+      <!-- DeepSeek -->
       <div class="setting-item">
         <div class="setting-label">
-          <span class="label-text">DeepSeek API Key</span>
-          <span class="label-desc">视觉模型也填这里，或换成其他 API Key</span>
+          <span class="label-text">② DeepSeek API Key</span>
+          <span class="label-desc">用于题目分析（思路/步骤/答案）</span>
         </div>
         <div class="setting-input">
           <input
@@ -26,34 +28,44 @@
 
       <div class="divider"></div>
 
-      <!-- 模型预设选择 -->
+      <!-- 百炼 -->
       <div class="setting-item">
         <div class="setting-label">
-          <span class="label-text">模型提供商</span>
-          <span class="label-desc">选择支持图片识别的模型</span>
+          <span class="label-text">① 阿里百炼 API Key</span>
+          <span class="label-desc">用于图片→文字 OCR，支持数学公式</span>
         </div>
-        <select v-model="selectedPreset" class="input" @change="onPresetChange">
-          <option v-for="p in presets" :key="p.key" :value="p.key">
-            {{ p.label }}
-          </option>
+        <div class="setting-input">
+          <input
+            v-model="localBailianKey"
+            :type="showBailian ? 'text' : 'password'"
+            class="input"
+            placeholder="sk-xxxxxxxxxxxxxxxx"
+            @input="onBailianKeyChange"
+          />
+          <button class="btn btn-sm btn-outline toggle-btn" @click="showBailian = !showBailian">
+            {{ showBailian ? '隐藏' : '显示' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="setting-item">
+        <div class="setting-label">
+          <span class="label-text">百炼视觉模型</span>
+        </div>
+        <select v-model="localBailianModel" class="input" @change="onBailianModelChange">
+          <option value="qwen3-vl-plus">qwen3-vl-plus（推荐）</option>
+          <option value="qwen2.5-vl-72b">qwen2.5-vl-72b（更强）</option>
+          <option value="qwen-vl-max">qwen-vl-max（兼容）</option>
+          <option value="qwen-vl-plus">qwen-vl-plus</option>
         </select>
       </div>
 
-      <div class="setting-item">
-        <div class="setting-label">
-          <span class="label-text">API 地址</span>
-        </div>
-        <input
-          v-model="localApiBase"
-          class="input"
-          placeholder="https://api.deepseek.com"
-          @input="onBaseChange"
-        />
-      </div>
+      <div class="divider"></div>
 
+      <!-- DeepSeek 模型 -->
       <div class="setting-item">
         <div class="setting-label">
-          <span class="label-text">模型名称</span>
+          <span class="label-text">DeepSeek 模型</span>
         </div>
         <input
           v-model="localModel"
@@ -63,22 +75,26 @@
         />
       </div>
 
-      <button v-if="localApiKey" class="btn btn-sm btn-outline mt-2" @click="clearKey">
-        清除 API Key
+      <div class="text-sm text-muted mt-2">
+        流程：百炼多模态OCR提取文字+公式 → DeepSeek分析题目
+      </div>
+
+      <button v-if="localApiKey || localBailianKey" class="btn btn-sm btn-outline mt-2" @click="clearKeys">
+        清除所有 Key
       </button>
     </div>
 
-    <!-- 模型信息 -->
-    <div class="section-title mt-3">当前模式</div>
+    <!-- 当前流程 -->
+    <div class="section-title mt-3">当前流程</div>
     <div class="card-glass">
       <div class="setting-item">
         <div class="setting-label">
-          <span class="label-text">{{ isVision ? '🖼️ 视觉模式（推荐）' : '📝 OCR+文本模式' }}</span>
-          <span class="label-desc">{{ isVision ? '图片直接发给 AI 识别+分析，一步到位' : '先用 OCR 提取文字，再发给 AI 分析' }}</span>
+          <span class="label-text">🖼️ 百炼多模态OCR → 🤖 DeepSeek分析</span>
+          <span class="label-desc">百炼提取文字+公式 → DeepSeek给出解题思路和答案</span>
         </div>
       </div>
-      <div v-if="!isVision" class="text-sm text-muted mt-2">
-        ⚠️ {{ selectedPresetLabel }} 不支持图片识别，将自动使用 OCR 提取文字后再分析
+      <div class="text-sm text-muted mt-2">
+        费用：百炼约¥0.02/题 + DeepSeek约¥0.0005/题，合计不到3分钱
       </div>
     </div>
 
@@ -122,7 +138,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useSettings } from '@/composables/useSettings.js'
 import { useDb } from '@/composables/useDb.js'
 import { showToast } from '@/stores/appState.js'
@@ -131,40 +147,19 @@ const { settings, update, clear } = useSettings()
 const { exportAll, importAll, clearAll, getCount } = useDb()
 
 const localApiKey = ref('')
-const localApiBase = ref('')
 const localModel = ref('')
 const showKey = ref(false)
+const localBailianKey = ref('')
+const localBailianModel = ref('qwen3-vl-plus')
+const showBailian = ref(false)
 const saved = ref(false)
 const count = ref(0)
-const selectedPreset = ref('deepseek-flash')
-
-// 模型预设
-const presets = [
-  { key: 'openai-gpt4o', label: 'OpenAI GPT-4o (推荐)', base: 'https://api.openai.com', model: 'gpt-4o', vision: true },
-  { key: 'openai-gpt4o-mini', label: 'OpenAI GPT-4o-mini (便宜)', base: 'https://api.openai.com', model: 'gpt-4o-mini', vision: true },
-  { key: 'deepseek-flash', label: 'DeepSeek V4 Flash (纯文本)', base: 'https://api.deepseek.com', model: 'deepseek-v4-flash', vision: false },
-  { key: 'deepseek-pro', label: 'DeepSeek V4 Pro', base: 'https://api.deepseek.com', model: 'deepseek-v4-pro', vision: false },
-  { key: 'custom', label: '自定义（手动填写）', base: '', model: '', vision: true }
-]
-
-const isVision = computed(() => {
-  const p = presets.find(p => p.key === selectedPreset.value)
-  return p ? p.vision : true
-})
-
-const selectedPresetLabel = computed(() => {
-  const p = presets.find(p => p.key === selectedPreset.value)
-  return p ? p.label : '当前模型'
-})
 
 onMounted(() => {
   localApiKey.value = settings.value.apiKey
-  localApiBase.value = settings.value.apiBase
   localModel.value = settings.value.model || 'deepseek-v4-flash'
-  // 自动匹配预设
-  const match = presets.find(p => p.base === settings.value.apiBase && p.model === settings.value.model)
-  if (match) selectedPreset.value = match.key
-  else if (settings.value.apiBase && settings.value.model) selectedPreset.value = 'custom'
+  localBailianKey.value = settings.value.bailianApiKey || ''
+  localBailianModel.value = settings.value.bailianModel || 'qwen3-vl-plus'
   loadCount()
 })
 
@@ -172,31 +167,23 @@ function onKeyChange() {
   update('apiKey', localApiKey.value)
   showSaveTip()
 }
-
-function onBaseChange() {
-  update('apiBase', localApiBase.value)
-  showSaveTip()
-}
-
-function clearKey() {
-  localApiKey.value = ''
-  clear()
-  showSaveTip()
-}
-
-function onPresetChange() {
-  const p = presets.find(p => p.key === selectedPreset.value)
-  if (p && p.key !== 'custom') {
-    localApiBase.value = p.base
-    localModel.value = p.model
-    update('apiBase', p.base)
-    update('model', p.model)
-    showSaveTip()
-  }
-}
-
 function onModelChange() {
   update('model', localModel.value)
+  showSaveTip()
+}
+function onBailianKeyChange() {
+  update('bailianApiKey', localBailianKey.value)
+  showSaveTip()
+}
+function onBailianModelChange() {
+  update('bailianModel', localBailianModel.value)
+  showSaveTip()
+}
+function clearKeys() {
+  localApiKey.value = ''
+  localBailianKey.value = ''
+  settings.value = { ...settings.value, apiKey: '', bailianApiKey: '' }
+  save()
   showSaveTip()
 }
 

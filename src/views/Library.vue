@@ -67,13 +67,13 @@
           <!-- 题目原文 -->
           <div class="detail-section">
             <div class="detail-label">📄 题目原文</div>
-            <p class="detail-text">{{ q.originalText }}</p>
+            <MathText class="detail-text" :text="q.originalText" />
           </div>
 
           <!-- 解题思路 -->
           <div v-if="q.solution?.thinking" class="detail-section">
             <div class="detail-label">💡 解题思路</div>
-            <p class="detail-text">{{ q.solution.thinking }}</p>
+            <MathText class="detail-text" :text="q.solution.thinking" />
           </div>
 
           <!-- 答题流程 -->
@@ -82,7 +82,7 @@
             <div class="steps-list">
               <div v-for="(step, i) in q.solution.steps" :key="i" class="step-item">
                 <span class="step-num">{{ i + 1 }}</span>
-                <span class="detail-text">{{ step }}</span>
+                <MathText class="detail-text" :text="step" />
               </div>
             </div>
           </div>
@@ -90,7 +90,7 @@
           <!-- 答案 -->
           <div v-if="q.solution?.answer" class="detail-section answer-section">
             <div class="detail-label">✅ 答案</div>
-            <p class="answer-text">{{ q.solution.answer }}</p>
+            <MathText class="answer-text" :text="q.solution.answer" />
           </div>
 
           <!-- 操作 -->
@@ -108,6 +108,7 @@ import { ref, onMounted } from 'vue'
 import { useDb } from '@/composables/useDb.js'
 import { getSubjectList, QUESTION_TYPES } from '@/config/subjects.js'
 import { showToast } from '@/stores/appState.js'
+import MathText from '@/components/result/MathText.vue'
 
 const { getQuestions, deleteQuestion: delQ, getCount } = useDb()
 

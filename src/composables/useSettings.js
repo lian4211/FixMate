@@ -3,9 +3,14 @@ import { ref } from 'vue'
 const STORAGE_KEY = 'fixmate_settings'
 
 const defaults = {
+  // DeepSeek
   apiKey: '',
   model: 'deepseek-v4-flash',
-  apiBase: 'https://api.deepseek.com'
+  apiBase: 'https://api.deepseek.com',
+  // Bailian / 百炼
+  bailianApiKey: '',
+  bailianModel: 'qwen3-vl-plus',
+  bailianApiBase: 'https://dashscope.aliyuncs.com'
 }
 
 export function useSettings() {
@@ -40,8 +45,12 @@ export function useSettings() {
     return !!settings.value.apiKey
   }
 
+  function hasBailianKey() {
+    return !!settings.value.bailianApiKey
+  }
+
   // 立即加载
   load()
 
-  return { settings, load, save, update, clear, hasApiKey }
+  return { settings, load, save, update, clear, hasApiKey, hasBailianKey }
 }

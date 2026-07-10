@@ -56,7 +56,7 @@
         @click="startOcr"
       >
         <span v-if="loading" class="spinner" style="width:18px;height:18px;border-width:2px"></span>
-        <span v-else>{{ isVisionModel ? '🖼️ 开始识别' : '📷 扫描文字' }}</span>
+        <span v-else>{{ hasBailianKey() ? '🖼️ 开始识别' : '📝 手动输入' }}</span>
       </button>
     </div>
 
@@ -105,8 +105,8 @@
 
       <!-- 题目原文 -->
       <div class="card-glass">
-        <div class="label-tag">题目原文</div>
-        <p class="original-text">{{ result.originalText }}</p>
+        <div class="label-tag">📄 题目原文</div>
+        <MathText class="math-content" :text="result.originalText" />
       </div>
 
       <!-- 分类信息 -->
@@ -121,7 +121,7 @@
       <!-- 解题思路 -->
       <div v-if="result.solution.thinking" class="card-glass">
         <div class="label-tag">💡 解题思路</div>
-        <p class="thinking-text">{{ result.solution.thinking }}</p>
+        <MathText class="math-content" :text="result.solution.thinking" />
       </div>
 
       <!-- 答题流程 -->
@@ -134,7 +134,7 @@
             class="step-item"
           >
             <span class="step-num">{{ i + 1 }}</span>
-            <span class="step-text">{{ step }}</span>
+            <MathText class="step-text" :text="step" />
           </div>
         </div>
       </div>
@@ -142,7 +142,7 @@
       <!-- 最终答案 -->
       <div v-if="result.solution.answer" class="card-glass answer-card">
         <div class="label-tag">✅ 最终答案</div>
-        <p class="answer-text">{{ result.solution.answer }}</p>
+        <MathText class="math-content answer-text" :text="result.solution.answer" />
       </div>
 
       <!-- 存入错题本 -->
@@ -167,13 +167,14 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { useApi } from '@/composables/useApi.js'
 import { useImage } from '@/composables/useImage.js'
 import { useDb } from '@/composables/useDb.js'
 import { useSettings } from '@/composables/useSettings.js'
 import { showToast } from '@/stores/appState.js'
 import ImageEditor from '@/components/upload/ImageEditor.vue'
+import MathText from '@/components/result/MathText.vue'
 
 const fileInput = ref(null)
 const imageDataUrl = ref(null)
@@ -182,14 +183,10 @@ const progressText = ref('')
 const showEditor = ref(false)
 const editableOcrText = ref('')
 
-const isVisionModel = computed(() => {
-  return settings.value.model && !settings.value.model?.includes('deepseek')
-})
-
 const { loading, error, result, ocrText, analyzeImage } = useApi()
 const { compress } = useImage()
 const { addQuestion } = useDb()
-const { hasApiKey, settings } = useSettings()
+const { hasApiKey, hasBailianKey, settings } = useSettings()
 
 function triggerUpload() {
   fileInput.value?.click()
@@ -222,65 +219,99 @@ async function startOcr() {
   editableOcrText.value = ''
   result.value = null
 
-  // 判断模型是否支持视觉
-  const isVision = !settings.value.model?.includes('deepseek')
-
-  if (isVision) {
-    // === 视觉模式：直接发图片给 AI ===
+  // 判断是否有百炼 Key
+  if (hasBailianKey()) {
+    // === 双API流程：百炼OCR → DeepSeek分析 ===
     try {
       loading.value = true
       error.value = null
-      progressText.value = '正在分析图片...'
 
-      const baseUrl = settings.value.apiBase || 'https://api.deepseek.com'
-      const model = settings.value.model || 'gpt-4o'
-      const prompt = (await import('@/config/prompts.js')).getPrompt()
+      // Step 1: 百炼多模态OCR
+      progressText.value = '🖼️ 百炼正在提取文字和公式...'
 
-      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      const bailianResp = await fetch(
+        `${settings.value.bailianApiBase || 'https://dashscope.aliyuncs.com'}/compatible-mode/v1/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${settings.value.bailianApiKey}`
+          },
+          body: JSON.stringify({
+            model: settings.value.bailianModel || 'qwen3-vl-plus',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: '请精确提取图片中的文字和数学公式。数学公式用LaTeX格式输出（如 $ax^2+bx+c=0$），保留所有题目条件和选项。不要分析题目，只提取原文。' },
+                  { type: 'image_url', image_url: { url: imageDataUrl.value } }
+                ]
+              }
+            ],
+            temperature: 0.1,
+            max_tokens: 4096
+          })
+        }
+      )
+
+      if (!bailianResp.ok) {
+        const errText = await bailianResp.text().catch(() => '')
+        throw new Error(`百炼OCR失败 (${bailianResp.status}): ${errText}`)
+      }
+
+      const bailianData = await bailianResp.json()
+      const bailianContent = bailianData.choices?.[0]?.message?.content
+      if (!bailianContent) throw new Error('百炼返回内容为空')
+
+      // 保存OCR结果供显示
+      ocrText.value = bailianContent
+      progressText.value = '✅ 文字提取完成，正在分析题目...'
+
+      // Step 2: DeepSeek 分析
+      const dsPrompt = (await import('@/config/prompts.js')).getPrompt()
+      const dsBody = {
+        model: settings.value.model || 'deepseek-v4-flash',
+        messages: [
+          { role: 'system', content: dsPrompt },
+          { role: 'user', content: `以下是从图片中提取的题目文字（包含LaTeX数学公式），请分析并按要求返回JSON格式的结果，注意保持LaTeX公式原样输出：\n\n${bailianContent}` }
+        ],
+        temperature: 0.1,
+        max_tokens: 4096
+      }
+
+      const dsResp = await fetch(`${settings.value.apiBase || 'https://api.deepseek.com'}/v1/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${settings.value.apiKey}`
         },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: prompt },
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: '请分析这张题目图片，按要求的 JSON 格式返回结果。' },
-                { type: 'image_url', image_url: { url: imageDataUrl.value } }
-              ]
-            }
-          ],
-          temperature: 0.1,
-          max_tokens: 4096
-        })
+        body: JSON.stringify(dsBody)
       })
 
-      if (!response.ok) {
-        const errText = await response.text().catch(() => '未知错误')
-        throw new Error(`API 请求失败 (${response.status}): ${errText}`)
+      if (!dsResp.ok) {
+        const errText = await dsResp.text().catch(() => '')
+        throw new Error(`DeepSeek分析失败 (${dsResp.status}): ${errText}`)
       }
 
       progressText.value = '正在解析结果...'
-      const data = await response.json()
-      const content = data.choices?.[0]?.message?.content
-      if (!content) throw new Error('API 返回内容为空')
 
-      const { parseResponse, validateResult } = await import('@/config/prompts.js')
+      const dsData = await dsResp.json()
+      const dsContent = dsData.choices?.[0]?.message?.content
+      if (!dsContent) throw new Error('DeepSeek返回内容为空')
+
+      const { parseResponse } = await import('@/config/prompts.js')
       let parsed
       try {
-        parsed = parseResponse(content)
+        parsed = parseResponse(dsContent)
       } catch (e) {
         parsed = {
-          originalText: content,
+          originalText: bailianContent,
           subject: '其他', subSubject: '', questionType: '其他',
-          solution: { thinking: '解析返回格式失败', steps: [], answer: content }
+          solution: { thinking: '', steps: [], answer: dsContent }
         }
       }
-      if (!parsed.originalText || parsed.originalText.length < 3) parsed.originalText = '(未能识别)'
+
+      if (!parsed.originalText || parsed.originalText.length < 3) parsed.originalText = bailianContent
       if (!parsed.subject) parsed.subject = '其他'
       if (!parsed.questionType) parsed.questionType = '其他'
       if (!parsed.solution) parsed.solution = { thinking: '', steps: [], answer: '' }
@@ -657,5 +688,9 @@ function reset() {
   color: var(--primary);
   line-height: 1.6;
   white-space: pre-wrap;
+}
+.math-content {
+  line-height: 1.8;
+  font-size: 15px;
 }
 </style>
